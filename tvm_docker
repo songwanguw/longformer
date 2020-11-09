@@ -1,4 +1,4 @@
-FROM nvidia/cuda:10.0-cudnn7-devel-ubuntu16.04
+FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu16.04
 
 RUN apt-get update --fix-missing
 
@@ -13,6 +13,7 @@ RUN apt update
 RUN apt install -y python3.7
 RUN ln -sf /usr/bin/python3.7 /usr/bin/python3
 RUN apt install -y python3-pip
+RUN pip3 install --upgrade pip
 
 # LLVM
 RUN echo deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main \
@@ -20,8 +21,8 @@ RUN echo deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main \
      wget -O - http://apt.llvm.org/llvm-snapshot.gpg.key|sudo apt-key add - && \
      apt-get update && apt-get install -y --force-yes llvm-8
 
-RUN pip3 install numpy pytest cython decorator scipy ipython ipdb torch==1.2.0 torchvision tensorboardx tensorboard pytest
-
+RUN pip3 install numpy pytest cython decorator scipy ipython ipdb pytest 
+RUN pip3 install torch==1.5.1 torchvision==0.6.1
 RUN apt-get install -y python3.7-dev
 RUN pip3 install fairseq==v0.9.0
 

@@ -123,3 +123,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# hidden some folders
+triviaqa/
+models/
+data/
+incubator-tvm/

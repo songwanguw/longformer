@@ -13,7 +13,7 @@ from transformers import RobertaTokenizer
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
-from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning.loggers import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
@@ -243,7 +243,7 @@ class TriviaQADataset(Dataset):
 
         # always use batch_size=1 where each batch is one document
         # will use grad_accum to increase effective batch size
-        assert len(batch) == 1
+        # assert len(batch) == 1
         fields_with_batch_size_one = [f[0] for f in stacked_fields]
         return fields_with_batch_size_one
 
@@ -372,9 +372,10 @@ class TriviaQA(pl.LightningModule):
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends)
         loss = output[0]
         lr = loss.new_zeros(1) + self.trainer.optimizers[0].param_groups[0]['lr']
-        tensorboard_logs = {'train_loss': loss, 'lr': lr,
+        tensorboard_logs = {'train_loss': loss, 'lr': lr, 'batch_nb' : batch_nb,
                             'input_size': input_ids.numel(),
                             'mem': torch.cuda.memory_allocated(input_ids.device) / 1024 ** 3}
+        self.log('my_train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
@@ -403,7 +404,7 @@ class TriviaQA(pl.LightningModule):
         pred_subword_ends = end_logits.argmax(dim=1)
         exact_match = (subword_ends[:, 0].squeeze(dim=-1) == pred_subword_ends).float() *  \
                       (subword_starts[:, 0].squeeze(dim=-1) == pred_subword_starts).float()
-
+        #self.log('vloss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return {'vloss': loss, 'vem': exact_match.mean(),
                 'qids': qids, 'answer_scores': answer_scores,
                 'f1': f1_scores, 'em': em_scores}
@@ -459,7 +460,9 @@ class TriviaQA(pl.LightningModule):
         torch.distributed.all_gather(gather_l_tensor, l_tensor)
         return torch.cat(gather_l_tensor).tolist()
 
-    def validation_end(self, outputs):
+    def validation_epoch_end(self, outputs):
+        print("-----Song Debug -----")
+        print("validation_epoch_end starts")
         avg_loss = torch.stack([x['vloss'] for x in outputs]).mean()
         avg_em = torch.stack([x['vem'] for x in outputs]).mean()
         string_qids = [item for sublist in outputs for item in sublist['qids']]
@@ -493,12 +496,19 @@ class TriviaQA(pl.LightningModule):
             em_scores.append(top_answer['em'])
         avg_val_f1 = sum(f1_scores) / len(f1_scores)
         avg_val_em = sum(em_scores) / len(em_scores)
+        print(f"validation_epoch_end  metrics {avg_val_f1:0.5f}, {avg_val_em:0.5f}")
 
         logs = {'val_loss': avg_loss, 'val_em': avg_em, 'avg_val_f1': avg_val_f1, 'avg_val_em': avg_val_em}
+        #self.log('val_loss', avg_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
+        #self.log('my_val_em', avg_em, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        #self.log('my_val_f1', avg_val_f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
         return {'avg_val_loss': avg_loss, 'log': logs, 'progress_bar': logs}
 
     def test_step(self, batch, batch_nb):
+        print("---- Song Debug-----")
+        print(f"test_step function {batch_nb:d}")
         input_ids, input_mask, segment_ids, subword_starts, subword_ends, qids, aliases = batch
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends)
         loss, start_logits, end_logits = output[:3]
@@ -510,7 +520,9 @@ class TriviaQA(pl.LightningModule):
         assert len(answers) == len(qids)
         return {'qids': qids, 'answers': answers}
 
-    def test_end(self, outputs):
+    def test_epoch_end(self, outputs):
+        print("----- Song Debug -----")
+        print("test_epoch_end starts")
         qids = [item for sublist in outputs for item in sublist['qids']]
         answers = [item for sublist in outputs for item in sublist['answers']]
 
@@ -528,11 +540,13 @@ class TriviaQA(pl.LightningModule):
 
         return {'count': len(qid_to_answer_text)}
 
-    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
+    #conflict with https://github.com/PyTorchLightning/pytorch-lightning/blob/ebe3a31ddd82c616df6612cb880b0b3b13b9ecde/pytorch_lightning/accelerators/accelerator.py#L103
+    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None, using_native_amp=None, using_lbfgs = None):
         optimizer.step()
         optimizer.zero_grad()
         self.scheduler.step(self.global_step)
 
+    
     def configure_optimizers(self):
         def lr_lambda(current_step):
             if current_step < self.args.warmup:
@@ -544,7 +558,7 @@ class TriviaQA(pl.LightningModule):
 
         return optimizer
 
-    @pl.data_loader
+    #@pl.data_loader, no longer use this decorator
     def train_dataloader(self):
         if self.train_dataloader_object is not None:
             return self.train_dataloader_object
@@ -555,13 +569,13 @@ class TriviaQA(pl.LightningModule):
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=self.args.ignore_seq_with_no_answers)
         sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
+        dl = DataLoader(dataset, batch_size=args.batch_size, shuffle=(sampler is None),
                         num_workers=self.args.num_workers, sampler=sampler,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.train_dataloader_object = dl
         return self.train_dataloader_object
 
-    @pl.data_loader
+    #@pl.data_loader
     def val_dataloader(self):
         if self.val_dataloader_object is not None:
             return self.val_dataloader_object
@@ -572,13 +586,13 @@ class TriviaQA(pl.LightningModule):
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=False)  # evaluation data should keep all examples
         sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
+        dl = DataLoader(dataset, batch_size=args.batch_size, shuffle=(sampler is None),
                         num_workers=self.args.num_workers, sampler=sampler,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.val_dataloader_object = dl
         return self.val_dataloader_object
 
-    @pl.data_loader
+    #@pl.data_loader
     def test_dataloader(self):
         if self.test_dataloader_object is not None:
             return self.test_dataloader_object
@@ -589,7 +603,7 @@ class TriviaQA(pl.LightningModule):
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=False)  # evaluation data should keep all examples
 
-        dl = DataLoader(dataset, batch_size=1, shuffle=False,
+        dl = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                         num_workers=self.args.num_workers, sampler=None,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.test_dataloader_object = dl
@@ -609,7 +623,8 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument("--save_prefix", type=str, required=True)
         parser.add_argument("--train_dataset", type=str, required=False, help="Path to the training squad-format")
         parser.add_argument("--dev_dataset", type=str, required=True, help="Path to the dev squad-format")
-        parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
+        parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+        parser.add_argument("--accumulate_grad_batches", type=int, default=8, help="Batch size")
         parser.add_argument("--gpus", type=str, default='0',
                             help="Comma separated list of gpus. Default is gpu 0. To use CPU, use --gpus "" ")
         parser.add_argument("--warmup", type=int, default=200, help="Number of warmup steps")
@@ -667,29 +682,31 @@ def main(args):
         filepath=os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
         save_top_k=5,
         verbose=True,
-        monitor='avg_val_f1',
-        mode='max',
+        monitor='vloss',
+        mode='min',
         prefix=''
     )
 
     args.gpus = [int(x) for x in args.gpus.split(',')] if args.gpus is not "" else None  # use CPU if no gpu provided
     print(args)
-    train_set_size = 110648  # hardcode dataset size. Needed to compute number of steps for the lr scheduler
-    num_devices = 1 or len(args.gpus)
-    args.steps = args.epochs * train_set_size / (args.batch_size * num_devices)
-    print(f'>>>>>>> #steps: {args.steps}, #epochs: {args.epochs}, batch_size: {args.batch_size * num_devices} <<<<<<<')
+    #train_set_size = 110648  # hardcode dataset size. Needed to compute number of steps for the lr scheduler
+    train_set_size = 14229 + 3
+    num_devices = 1 if args.gpus is None else len(args.gpus)
+    args.steps = args.epochs * train_set_size / (args.batch_size * args.accumulate_grad_batches * num_devices)
+    print("debugging: ", args.gpus, args.batch_size,  args.accumulate_grad_batches , num_devices)
+    print(f'>>>>>>> #steps: {args.steps}, #epochs: {args.epochs}, batch_size: {args.batch_size * args.accumulate_grad_batches * num_devices} <<<<<<<')
 
     trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if args.gpus and (len(args.gpus) > 1) else None,
-                         track_grad_norm=-1, max_nb_epochs=args.epochs, early_stop_callback=None,
-                         accumulate_grad_batches=args.batch_size,
+                         track_grad_norm=-1, max_epochs=args.epochs, callbacks=None,
+                         accumulate_grad_batches=args.accumulate_grad_batches,
                          val_check_interval=args.val_every,
-                         val_percent_check=args.val_percent_check,
-                         test_percent_check=args.val_percent_check,
+                         limit_val_batches=args.val_percent_check,
+                         limit_test_batches=args.val_percent_check,
                          logger=logger if not args.disable_checkpointing else False,
                          checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
-                         show_progress_bar=not args.no_progress_bar,
-                         use_amp=not args.fp32, amp_level='O2',
+                         amp_backend='apex', amp_level='O2',
                          )
+    #amp_backend: str = 'native',
     if not args.test:
         trainer.fit(model)
     trainer.test(model)
