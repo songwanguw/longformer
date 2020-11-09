@@ -129,3 +129,4 @@ triviaqa/
 models/
 data/
 incubator-tvm/
+logs/
