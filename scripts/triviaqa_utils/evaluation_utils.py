@@ -122,14 +122,17 @@ def evaluate_triviaqa(ground_truth, predicted_answers, qid_list=None, mute=False
             exact_match_score, prediction, ground_truths)
         if em_for_this_question == 0 and not mute:
             print("em=0:", prediction, ground_truths)
+        else:
+            print("em=1:", prediction, ground_truths)
         exact_match += em_for_this_question
         f1_for_this_question = metric_max_over_ground_truths(
             f1_score, prediction, ground_truths)
         f1 += f1_for_this_question
 
+    print(f"exact_match: {exact_match:d} len(qid_list) : {len(qid_list):d}" )
     exact_match = 100.0 * exact_match / len(qid_list)
     f1 = 100.0 * f1 / len(qid_list)
-
+   
     return {'exact_match': exact_match, 'f1': f1, 'common': common, 'denominator': len(qid_list),
             'pred_len': len(predicted_answers), 'gold_len': len(ground_truth)}
 

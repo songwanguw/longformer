@@ -375,7 +375,7 @@ class TriviaQA(pl.LightningModule):
         tensorboard_logs = {'train_loss': loss, 'lr': lr, 'batch_nb' : batch_nb,
                             'input_size': input_ids.numel(),
                             'mem': torch.cuda.memory_allocated(input_ids.device) / 1024 ** 3}
-        self.log('my_train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        #self.log('my_train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
@@ -535,7 +535,7 @@ class TriviaQA(pl.LightningModule):
             top_answer = sorted(answer_metrics, key=lambda x: x['answer_score'], reverse=True)[0]
             qid_to_answer_text[qid] = top_answer['answer_text']
 
-        with open('predictions.json', 'w') as f:
+        with open(args.test_output_file, 'w') as f:
             json.dump(qid_to_answer_text, f)
 
         return {'count': len(qid_to_answer_text)}
@@ -631,6 +631,7 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument("--lr", type=float, default=0.0001, help="Maximum learning rate")
         parser.add_argument("--val_every", type=float, default=0.2, help="Number of training steps between validations")
         parser.add_argument("--val_percent_check", default=1.00, type=float, help='Percent of validation data used')
+        parser.add_argument("--test_output_file", default='predictions.json', type=str, help='file path to write the predictions on test set to')
         parser.add_argument("--num_workers", type=int, default=4, help="Number of data loader workers")
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
         parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
@@ -677,7 +678,7 @@ def main(args):
         name=args.save_prefix,
         version=0  # always use version=0
     )
-
+    #filepath: path to save the model file. deprecated, now use "dirpath": directory to save the model file.
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
         save_top_k=5,
